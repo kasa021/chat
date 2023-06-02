@@ -73,6 +73,8 @@ void *send_message(void *arg) {
         snprintf(message, message_size, "%s: %s", args->username, buffer);
 
         pthread_mutex_lock(mlock);
+        printf("\033[1A\033[K");  // カーソルを1行上に移動して、その行をクリア（消去）
+        printf("%s\n", message);
         if (send(socket_fd, message, strlen(message) + 1, 0) == -1) {
             perror("client: send");
             exit(EXIT_FAILURE);
