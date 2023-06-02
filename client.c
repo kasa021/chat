@@ -62,6 +62,10 @@ void *send_message(void *arg) {
     while (1) {
         fgets(buffer, BUFSIZE, stdin);
         chop(buffer);
+        if(strcmp(buffer, "quit") == 0) {  // quit が入力されたら終了
+            send(socket_fd, buffer, strlen(buffer) + 1, 0);
+            pthread_exit(NULL);
+        }
         chop(args->username);  // ユーザ名の末尾にある改行コードを削除
 
         size_t message_size = strlen(args->username) + strlen(buffer) + 3;
