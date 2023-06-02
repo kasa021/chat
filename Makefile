@@ -1,19 +1,19 @@
-all: server_async client
+all: server client
 
-server_async:server_async.c
-	gcc -o server_async server_async.c
+server:server.c
+	gcc -o server server.c -lpthread
 
 client:client.c
-	gcc -o client client.c
+	gcc -o client client.c -lpthread
 
 runServer:
-	./server_async 50000
+	./server 50001
 
 runClient:
-	./client localhost 50000
+	./client localhost 50001
 
 clean:
 	rm -f  *~
 
 clean-all:
-	rm -f server_async client
+	rm -f server client
