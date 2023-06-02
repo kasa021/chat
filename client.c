@@ -30,6 +30,7 @@ void *reception(void *arg) {                              // 受信用スレッ�
     int socket_fd = args->socket_fd;                      // ソケットのファイル識別子
     pthread_mutex_t *mlock = args->mlock;                 // 排他制御用の mutex
     pthread_t *send_thread = args->sender;                // 送信用スレッドのファイル識別子
+    pthread_t *recv_thread = args->recv;                  // 受信用スレッドのファイル識別子
 
     while (1) {                                           // 受信した文字列を表示する
         if (recv(socket_fd, buffer, BUFSIZE, 0) == -1) {  // 文字列を受信
@@ -39,9 +40,9 @@ void *reception(void *arg) {                              // 受信用スレッ�
         pthread_mutex_lock(mlock);                        // mutex をロック
         printf("%s\n", buffer);                           // 受信した文字列を表示
         pthread_mutex_unlock(mlock);                      // mutex をアンロック
-        if (strcmp(buffer, "quit") == 0) {    
-            printf("recv_thread 終了\n");
-            pthread_exit(NULL);                           // スレッドを終了
+        if (strcmp(buffer, "quit") == 0) {
+
+            pthread_exit(NULL);
         }
     }
 }
@@ -63,31 +64,12 @@ void *send_message(void *arg) {                                      // 送信�
         }
         pthread_mutex_unlock(mlock);                                 //  mutex をアンロック
         if (strcmp(buffer, "quit") == 0) {
-            printf("send_thread 終了\n");
             pthread_exit(NULL);                                      // 送信した文字列が "quit" の場合
         }
     }
 }
 
-void *monitoring(void *arg) {                         // 監視用スレッドの関数
-    mythread_args_t *args = (mythread_args_t *) arg;  // 引数を構造体にキャスト
-    pthread_t *recv_thread = args->recv;  // 受信用スレッドのファイル識別子
-    pthread_t *send_thread = args->sender;       // 送信用スレッドのファイル識別子
 
-    while (1) {  // 受信スレッド、または送信スレッドが終了したらもう一方も終了させる
-        // pthread_join はスレッドが終了するまで待機する関数
-        if (pthread_join(*recv_thread, NULL) == 0) {
-            printf("recv_thread 終了\n");
-            pthread_cancel(*send_thread);  // 送信スレッドを終了
-            pthread_exit(NULL);            // 監視スレッドを終了
-        }
-        if (pthread_join(*send_thread, NULL) == 0) {
-            printf("send_thread 終了\n");
-            pthread_cancel(*recv_thread);  // 受信スレッドを終了
-            pthread_exit(NULL);            // 監視スレッドを終了
-        }
-    }
-}
 
 int main(int argc, char *argv[]) {
     int socket_fd;              // socket() の返すファイル識別子
@@ -95,7 +77,7 @@ int main(int argc, char *argv[]) {
     struct hostent *hp;         // ホスト情報
     uint16_t port;              // ポート番号
     char buffer[BUFSIZE];       // メッセージを格納するバッファ
-    pthread_t reception_thread, send_thread, monitoring_thread;
+    pthread_t reception_thread, send_thread; // 送受信用スレッドのファイル識別子
 
     if (argc != 3) {            // 引数の数が正しいか確認
         fprintf(stderr, "Usage: %s <hostname> <port>\n", argv[0]);
@@ -132,22 +114,33 @@ int main(int argc, char *argv[]) {
 
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     mythread_args_t args1 = { "reception", socket_fd, &mutex, &send_thread, &reception_thread };
-    mythread_args_t args2 = { "send", socket_fd, &mutex, &reception_thread, &send_thread };
-    mythread_args_t args3 = { "monitoring", socket_fd, &mutex, &reception_thread, &send_thread };
+    mythread_args_t args2 = { "send", socket_fd, &mutex, &send_thread, &reception_thread };
+    
 
     // スレッドの作成と実行
     pthread_create(&reception_thread, NULL, reception, (void *) &args1);
     pthread_create(&send_thread, NULL, send_message, (void *) &args2);
-    pthread_create(&monitoring_thread, NULL, monitoring, (void *) &args3);
 
-    // スレッドの終了を待機
-    pthread_join(reception_thread, NULL);
-    pthread_join(send_thread, NULL);
-    pthread_join(monitoring_thread, NULL);
+    while(1){
+        if(pthread_tryjoin_np(reception_thread, NULL) == 0){
+            printf("reception_thread is finished\n");
+            pthread_cancel(send_thread);
+            printf("send_thread is canceled\n");
+            break;
+        }
+        if(pthread_tryjoin_np(send_thread, NULL) == 0){
+            printf("send_thread is finished\n");
+            pthread_cancel(reception_thread);
+            printf("reception_thread is canceled\n");
+            break;
+        }
+    }
+
+
+
+    printf("終了\n");
 
     close(socket_fd);  // ソケットを閉じる
-
-
 
     return 0;
 }
