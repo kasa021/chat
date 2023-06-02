@@ -8,8 +8,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define BUFSIZE 1024
+#define BUFSIZE 6144
 
+char ASCII_ART[10][20] = { "squid", "cat","spongebob","airou" };
 typedef struct {
     char *name;              // スレッドの名前
     char *username;          // ユーザ名
@@ -33,31 +34,51 @@ void *reception(void *arg) {
     pthread_t *send_thread = args->sender;
 
     while (1) {
-        if (recv(socket_fd, buffer, BUFSIZE, 0) == -1) {  // 受信
+        ssize_t recv_bytes = recv(socket_fd, buffer, BUFSIZE, 0);
+        if (recv_bytes == -1) {  // 受信
             perror("client: recv");
             exit(EXIT_FAILURE);
         }
+
         pthread_mutex_lock(mlock);
-        printf("%s\n", buffer);  // 受信したメッセージを表示
+        printf("%.*s\n", (int) recv_bytes, buffer);  // 受信したメッセージを表示
         pthread_mutex_unlock(mlock);
         if (strcmp(buffer, "quit") == 0) {
             pthread_exit(NULL);
         }
     }
 }
+void send_ascii_art(int socket_fd, pthread_mutex_t *mlock, char *buffer) {
+    FILE *file;
+    size_t file_size = strlen(buffer) + 14;
+    char *file_path = (char *) malloc(file_size);
+    snprintf(file_path, file_size, "./assets/%s.txt", buffer);
+    printf("%s\n", file_path);
 
-void send_ascii_art(int socket_fd, pthread_mutex_t *mlock, FILE *file) {
+    file = fopen(file_path, "r");
+    if (file == NULL) {
+        perror("client: fopen");
+        exit(EXIT_FAILURE);
+    }
+
     char art_buffer[BUFSIZE];
-    while (fgets(art_buffer, BUFSIZE, file) != NULL) {
+    size_t read_bytes;
+    while ((read_bytes = fread(art_buffer, 1, BUFSIZE, file)) > 0) {
         pthread_mutex_lock(mlock);
-        // printf("\033[1A\033[K");  // カーソルを1行上に移動して、その行をクリア（消去）
-        printf("\x1b[32m%s\x1b[0m", art_buffer);
-        if (send(socket_fd, art_buffer, strlen(art_buffer) + 1, 0) == -1) {
+        printf("\x1b[32m");                         // ANSIエスケープシーケンスで表示の色を変更
+        fwrite(art_buffer, 1, read_bytes, stdout);  // アスキーアートを表示
+        printf("\x1b[0m");
+        printf("\n");
+        fflush(stdout);                                          // 出力をフラッシュ
+        pthread_mutex_unlock(mlock);
+        if (send(socket_fd, art_buffer, read_bytes, 0) == -1) {  // アスキーアートを送信
             perror("client: send");
             exit(EXIT_FAILURE);
         }
-        pthread_mutex_unlock(mlock);
     }
+
+    fclose(file);
+    free(file_path);
 }
 
 void *send_message(void *arg) {
@@ -83,19 +104,15 @@ void *send_message(void *arg) {
 
         chop(args->username);
 
-        if (strcmp(buffer, "art") == 0) {
-            FILE *file = fopen("./assets/art.txt", "r");
-            if (file == NULL) {
-                perror("client: fopen");
-                exit(EXIT_FAILURE);
+        int is_ascii_art = 0;
+        for (int i = 0; i < 10; i++) {
+            if (strcmp(buffer, ASCII_ART[i]) == 0) {
+                printf("%s\n", buffer);
+                is_ascii_art = 1;
+                send_ascii_art(socket_fd, mlock, buffer);
             }
-
-            // Send ASCII art
-            send_ascii_art(socket_fd, mlock, file);
-
-            fclose(file);
-            continue;
         }
+        if (is_ascii_art) continue;
 
         size_t message_size = strlen(args->username) + strlen(buffer) + 3;
         char *message = (char *) malloc(message_size);
