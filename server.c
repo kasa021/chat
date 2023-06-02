@@ -1,6 +1,5 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,60 +10,13 @@
 #define BUFSIZE 256
 #define MAX_CLIENTS 10
 
-typedef struct {
-    int socket_fd;
-    pthread_mutex_t *mlock;
-} client_args_t;
-
-int num_clients = 0;
-int client_sockets[MAX_CLIENTS];
-
-void *handle_client(void *arg) {
-    client_args_t *client_args = (client_args_t *) arg;
-    int socket_fd = client_args->socket_fd;
-    pthread_mutex_t *mlock = client_args->mlock;
-
-    char buffer[BUFSIZE];
-    ssize_t bytes_read;
-
-    while ((bytes_read = recv(socket_fd, buffer, BUFSIZE, 0)) > 0) {
-        pthread_mutex_lock(mlock);
-
-        // メッセージを他のクライアントに転送
-        for (int i = 0; i < num_clients; i++) {
-            int client_socket = client_sockets[i];
-            if (client_socket != socket_fd) {
-                if (send(client_socket, buffer, bytes_read, 0) == -1) {
-                    perror("server: send");
-                    // エラー処理
-                }
-            }
-        }
-
-        pthread_mutex_unlock(mlock);
-        memset(buffer, 0, BUFSIZE);
-    }
-
-    // クライアントが切断した場合の処理
-    pthread_mutex_lock(mlock);
-    for (int i = 0; i < num_clients; i++) {
-        if (client_sockets[i] == socket_fd) {
-            // 配列からクライアントを削除
-            memmove(client_sockets + i, client_sockets + i + 1, (num_clients - i - 1) * sizeof(int));
-            num_clients--;
-            break;
-        }
-    }
-    pthread_mutex_unlock(mlock);
-
-    close(socket_fd);
-    pthread_exit(NULL);
-}
-
 int main(int argc, char *argv[]) {
     int socket_fd;
     struct sockaddr_in server;
     uint16_t port;
+    int client_sockets[MAX_CLIENTS];  // 接続中のクライアントのソケット
+    fd_set active_fds;
+    int max_fd = 0;
 
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <port>\n", argv[0]);
@@ -82,7 +34,7 @@ int main(int argc, char *argv[]) {
 
     // サーバのソケットアドレス情報の設定
     memset((void *) &server, 0, sizeof(server));
-    server.sin_family = PF_INET;
+    server.sin_family = AF_INET;
     server.sin_port = htons(port);
     server.sin_addr.s_addr = htonl(INADDR_ANY);
 
@@ -100,31 +52,109 @@ int main(int argc, char *argv[]) {
 
     printf("Server started. Waiting for connections...\n");
 
-    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-    pthread_t client_threads[MAX_CLIENTS];
+    FD_ZERO(&active_fds);
+    FD_SET(socket_fd, &active_fds);
+    max_fd = socket_fd;
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        client_sockets[i] = 0;
+    }
 
     while (1) {
-        struct sockaddr_in client;
-        socklen_t client_len = sizeof(client);
+        fd_set read_fds = active_fds;
 
-        // クライアントからの接続を待機
-        int client_socket = accept(socket_fd, (struct sockaddr *) &client, &client_len);
-        if (client_socket == -1) {
-            perror("server: accept");
-            // エラー処理
+        // クライアントの接続を監視
+        if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) == -1) {
+            perror("server: select");
+            exit(EXIT_FAILURE);
         }
 
-        // 接続されたクライアントのソケットを配列に格納
-        pthread_mutex_lock(&mutex);
-        client_sockets[num_clients++] = client_socket;
-        pthread_mutex_unlock(&mutex);
+        // 新しいクライアントの接続を処理
+        if (FD_ISSET(socket_fd, &read_fds)) {
+            struct sockaddr_in client;
+            socklen_t client_len = sizeof(client);
 
-        printf("Client connected. Socket FD: %d\n", client_socket);
+            // クライアントからの接続を待機
+            int client_socket = accept(socket_fd, (struct sockaddr *) &client, &client_len);
+            if (client_socket == -1) {
+                perror("server: accept");
+                // エラー処理
+                continue;
+            }
 
-        client_args_t client_args = { client_socket, &mutex };
+            printf("Client connected. Socket FD: %d\n", client_socket);
 
-        // クライアントごとにスレッドを作成
-        pthread_create(&client_threads[num_clients - 1], NULL, handle_client, (void *) &client_args);
+            // 接続されたクライアントのソケットを配列に格納
+            int i;
+            for (i = 0; i < MAX_CLIENTS; i++) {
+                if (client_sockets[i] == 0) {
+                    client_sockets[i] = client_socket;
+                    break;
+                }
+            }
+
+            if (i == MAX_CLIENTS) {
+                fprintf(stderr, "Reached maximum number of clients.\n");
+                close(client_socket);
+            }
+            else {
+                FD_SET(client_socket, &active_fds);
+                if (client_socket > max_fd) {
+                    max_fd = client_socket;
+                }
+            }
+        }
+
+        // クライアントからのメッセージを処理
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            int client_socket = client_sockets[i];
+            if (client_socket != 0 && FD_ISSET(client_socket, &read_fds)) {
+                char buffer[BUFSIZE];
+                ssize_t bytes_read;
+
+                // クライアントからのメッセージを受信
+                bytes_read = recv(client_socket, buffer, BUFSIZE, 0);
+                if (bytes_read > 0) {
+                    // メッセージを他のクライアントに転送
+                    for (int j = 0; j < MAX_CLIENTS; j++) {
+                        int dest_socket = client_sockets[j];
+                        if (dest_socket != 0 && dest_socket != client_socket) {
+                            if (send(dest_socket, buffer, bytes_read, 0) == -1) {
+                                perror("server: send");
+                                // エラー処理
+                                continue;
+                            }
+                        }
+                    }
+                }
+                else if (bytes_read == 0) {
+                    // クライアントが切断した場合の処理
+                    printf("Client disconnected. Socket FD: %d\n", client_socket);
+
+                    // クライアントのソケットを配列から削除
+                    client_sockets[i] = 0;
+                    FD_CLR(client_socket, &active_fds);
+                    close(client_socket);
+                }
+                else {
+                    perror("server: recv");
+                    // エラー処理
+                    continue;
+                }
+            }
+        }
+
+        // クライアントの接続数が0ならサーバのソケットを閉じる
+        int connected_clients = 0;
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (client_sockets[i] != 0) {
+                connected_clients++;
+            }
+        }
+        if (connected_clients == 0) {
+            printf("All clients disconnected. Closing server socket.\n");
+            break;
+        }
     }
 
     // サーバのソケットをクローズ
