@@ -8,8 +8,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define BUFSIZE 256
+#define BUFSIZE 6144
 
+char ASCII_ART[10][20] = { "squid", "cat","spongebob","airou" };
 typedef struct {
     char *name;              // スレッドの名前
     char *username;          // ユーザ名
@@ -19,31 +20,65 @@ typedef struct {
     pthread_t *recv;         // 受信用スレッドのファイル識別子
 } mythread_args_t;
 
-void chop(char *str) {  // 文字列の末尾にある改行コードを削除する関数
+void chop(char *str) {
     char *p = strchr(str, '\n');
     if (p != NULL)
         *p = '\0';
 }
 
-void *reception(void *arg) {                              // 受信用スレッドの関数
-    mythread_args_t *args = (mythread_args_t *) arg;      // 引数を構造体にキャスト
-    char buffer[BUFSIZE];                                 // 受信した文字列を格納するバッファ
-    int socket_fd = args->socket_fd;                      // ソケットのファイル識別子
-    pthread_mutex_t *mlock = args->mlock;                 // 排他制御用の mutex
-    pthread_t *send_thread = args->sender;                // 送信用スレッドのファイル識別子
+void *reception(void *arg) {
+    mythread_args_t *args = (mythread_args_t *) arg;
+    char buffer[BUFSIZE];
+    int socket_fd = args->socket_fd;
+    pthread_mutex_t *mlock = args->mlock;
+    pthread_t *send_thread = args->sender;
 
-    while (1) {                                           // 受信した文字列を表示する
-        if (recv(socket_fd, buffer, BUFSIZE, 0) == -1) {  // 文字列を受信
-            perror("client: recv");                       // 受信に失敗した場合
-            exit(EXIT_FAILURE);                           // 異常終了
+    while (1) {
+        ssize_t recv_bytes = recv(socket_fd, buffer, BUFSIZE, 0);
+        if (recv_bytes == -1) {  // 受信
+            perror("client: recv");
+            exit(EXIT_FAILURE);
         }
-        pthread_mutex_lock(mlock);                        // mutex をロック
-        printf("%s\n",buffer);       // 受信した文字列を表示
-        pthread_mutex_unlock(mlock);                      // mutex をアンロック
+
+        pthread_mutex_lock(mlock);
+        printf("%.*s\n", (int) recv_bytes, buffer);  // 受信したメッセージを表示
+        pthread_mutex_unlock(mlock);
         if (strcmp(buffer, "quit") == 0) {
             pthread_exit(NULL);
         }
     }
+}
+void send_ascii_art(int socket_fd, pthread_mutex_t *mlock, char *buffer) {
+    FILE *file;
+    size_t file_size = strlen(buffer) + 14;
+    char *file_path = (char *) malloc(file_size);
+    snprintf(file_path, file_size, "./assets/%s.txt", buffer);
+    printf("%s\n", file_path);
+
+    file = fopen(file_path, "r");
+    if (file == NULL) {
+        perror("client: fopen");
+        exit(EXIT_FAILURE);
+    }
+
+    char art_buffer[BUFSIZE];
+    size_t read_bytes;
+    while ((read_bytes = fread(art_buffer, 1, BUFSIZE, file)) > 0) {
+        pthread_mutex_lock(mlock);
+        printf("\x1b[32m");                         // ANSIエスケープシーケンスで表示の色を変更
+        fwrite(art_buffer, 1, read_bytes, stdout);  // アスキーアートを表示
+        printf("\x1b[0m");
+        printf("\n");
+        fflush(stdout);                                          // 出力をフラッシュ
+        pthread_mutex_unlock(mlock);
+        if (send(socket_fd, art_buffer, read_bytes, 0) == -1) {  // アスキーアートを送信
+            perror("client: send");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    fclose(file);
+    free(file_path);
 }
 
 void *send_message(void *arg) {
@@ -57,22 +92,35 @@ void *send_message(void *arg) {
     fgets(buffer, BUFSIZE, stdin);
     chop(buffer);
 
-    args->username = strdup(buffer);  // ユーザ名を設定
+    args->username = strdup(buffer);
 
     while (1) {
         fgets(buffer, BUFSIZE, stdin);
         chop(buffer);
-        if(strcmp(buffer, "quit") == 0) {  // quit が入力されたら終了
+        if (strcmp(buffer, "quit") == 0) {
             send(socket_fd, buffer, strlen(buffer) + 1, 0);
             pthread_exit(NULL);
         }
-        chop(args->username);  // ユーザ名の末尾にある改行コードを削除
+
+        chop(args->username);
+
+        int is_ascii_art = 0;
+        for (int i = 0; i < 10; i++) {
+            if (strcmp(buffer, ASCII_ART[i]) == 0) {
+                printf("%s\n", buffer);
+                is_ascii_art = 1;
+                send_ascii_art(socket_fd, mlock, buffer);
+            }
+        }
+        if (is_ascii_art) continue;
 
         size_t message_size = strlen(args->username) + strlen(buffer) + 3;
         char *message = (char *) malloc(message_size);
         snprintf(message, message_size, "%s: %s", args->username, buffer);
 
         pthread_mutex_lock(mlock);
+        printf("\033[1A\033[K");
+        printf("\x1b[32m%s\n\x1b[0m", message);
         if (send(socket_fd, message, strlen(message) + 1, 0) == -1) {
             perror("client: send");
             exit(EXIT_FAILURE);
@@ -89,51 +137,46 @@ void *send_message(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
-    int socket_fd;                            // socket() の返すファイル識別子
-    struct sockaddr_in server;                // サーバプロセスのソケットアドレス情報
-    struct hostent *hp;                       // ホスト情報
-    uint16_t port;                            // ポート番号
-    char buffer[BUFSIZE];                     // メッセージを格納するバッファ
+    int socket_fd;
+    struct sockaddr_in server;
+    struct hostent *hp;
+    uint16_t port;
+    char buffer[BUFSIZE];
 
-    if (argc != 3) {                          // 引数の数が正しいか確認
+    if (argc != 3) {
         fprintf(stderr, "Usage: %s <hostname> <port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    port = atoi(argv[2]);  // ポート番号を設定
+    port = atoi(argv[2]);
 
-    // ソケットの作成: INET ドメイン・ストリーム型
     socket_fd = socket(PF_INET, SOCK_STREAM, 0);
     if (socket_fd == -1) {
         perror("client: socket");
         exit(EXIT_FAILURE);
     }
 
-    // サーバプロセスのソケットアドレス情報の設定
-    memset((void *) &server, 0, sizeof(server));  // アドレス情報構造体の初期化
-    server.sin_family = PF_INET;                  // プロトコルファミリの設定
-    server.sin_port = htons(port);                // ポート番号の設定
+    memset((void *) &server, 0, sizeof(server));
+    server.sin_family = PF_INET;
+    server.sin_port = htons(port);
 
-    // argv[1] のマシンの IP アドレスを返す
     if ((hp = gethostbyname(argv[1])) == NULL) {
         perror("client: gethostbyname");
         exit(EXIT_FAILURE);
     }
-    // IP アドレスの設定
+
     memcpy(&server.sin_addr, hp->h_addr_list[0], hp->h_length);
 
-    // サーバに接続．サーバが起動し，bind(), listen() している必要あり
     if (connect(socket_fd, (struct sockaddr *) &server, sizeof(server)) == -1) {
         perror("client: connect");
         exit(EXIT_FAILURE);
     }
 
-    pthread_t reception_thread, send_thread;  // 送受信用スレッドのファイル識別子
+    pthread_t reception_thread, send_thread;
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     mythread_args_t args1 = { "reception", NULL, socket_fd, &mutex, &send_thread, &reception_thread };
     mythread_args_t args2 = { "send", NULL, socket_fd, &mutex, &send_thread, &reception_thread };
 
-    // スレッドの作成と実行
     pthread_create(&reception_thread, NULL, reception, (void *) &args1);
     pthread_create(&send_thread, NULL, send_message, (void *) &args2);
 
@@ -154,7 +197,7 @@ int main(int argc, char *argv[]) {
 
     printf("終了\n");
 
-    close(socket_fd);  // ソケットを閉じる
+    close(socket_fd);
 
     return 0;
 }

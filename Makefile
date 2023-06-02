@@ -7,10 +7,10 @@ client:client.c
 	gcc -o client client.c -lpthread
 
 runServer:
-	./server 50001
+	./server 50000
 
 runClient:
-	./client localhost 50001
+	./client localhost 50000
 
 clean:
 	rm -f  *~
