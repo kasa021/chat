@@ -127,7 +127,7 @@ int main(int argc, char *argv[]) {
                         }
                     }
                 }
-                else if (bytes_read == 0) {
+                else if (bytes_read == 0) { 
                     // クライアントが切断した場合の処理
                     printf("Client disconnected. Socket FD: %d\n", client_socket);
 
