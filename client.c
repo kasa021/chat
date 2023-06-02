@@ -74,7 +74,7 @@ void *send_message(void *arg) {
 
         pthread_mutex_lock(mlock);
         printf("\033[1A\033[K");  // カーソルを1行上に移動して、その行をクリア（消去）
-        printf("%s\n", message);
+        printf("\x1b[32m%s\n\x1b[0m", message);
         if (send(socket_fd, message, strlen(message) + 1, 0) == -1) {
             perror("client: send");
             exit(EXIT_FAILURE);
