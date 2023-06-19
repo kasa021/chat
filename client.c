@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -53,7 +54,6 @@ void send_ascii_art(int socket_fd, pthread_mutex_t *mlock, char *buffer) {
     size_t file_size = strlen(buffer) + 14;
     char *file_path = (char *) malloc(file_size);
     snprintf(file_path, file_size, "./assets/%s.txt", buffer);
-    printf("%s\n", file_path);
 
     file = fopen(file_path, "r");
     if (file == NULL) {
@@ -67,7 +67,7 @@ void send_ascii_art(int socket_fd, pthread_mutex_t *mlock, char *buffer) {
         pthread_mutex_lock(mlock);
         printf("\x1b[32m");                         // ANSIエスケープシーケンスで表示の色を変更
         fwrite(art_buffer, 1, read_bytes, stdout);  // アスキーアートを表示
-        printf("\x1b[0m");
+        printf("\x1b[0m");  
         printf("\n");
         fflush(stdout);                                          // 出力をフラッシュ
         pthread_mutex_unlock(mlock);
@@ -107,7 +107,6 @@ void *send_message(void *arg) {
         int is_ascii_art = 0;
         for (int i = 0; i < 10; i++) {
             if (strcmp(buffer, ASCII_ART[i]) == 0) {
-                printf("%s\n", buffer);
                 is_ascii_art = 1;
                 send_ascii_art(socket_fd, mlock, buffer);
             }
